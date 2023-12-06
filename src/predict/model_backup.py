@@ -49,17 +49,16 @@ from sampling import *
 #     def forward(self, x, edge_index):
 #         return self.gat_layer(x, edge_index)
     
-class GATLayer(nn.Module):
+class DNN_layer(nn.Module):
 
     """Define network structure.
     """
 
-    def __init__(self, g, in_dim, out_dim):
+    def __init__(self, h1, h2):
         super().__init__()
-        self.g = g
-        self.fc = nn.Linear(in_dim, out_dim, bias=False)
-        self.attn_fc = nn.Linear(2 * out_dim, 1, bias=False)
-        self.reset_parameters()
+        self.l1 = nn.Linear(2, h1)
+        self.l2 = nn.Linear(h1, h2)
+        self.l3 = nn.Linear(h2, 3)
 
     def forward(self, unsplice, splice, alpha0, beta0, gamma0, dt):
         #print(f"dt is {dt}")
