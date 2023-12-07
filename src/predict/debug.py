@@ -49,11 +49,14 @@ else:
     if len(gene_not_in_cell_type_u_s)>0: print(gene_not_in_cell_type_u_s," not in the data cell_type_u_s")
 
 cell_type_u_s=cell_type_u_s.reset_index(drop=True)
-gene_list_buring=[list(cell_type_u_s.gene_name.drop_duplicates())[0]]
-print("wtf is a buring")
-print(gene_list_buring)
+# gene_list_buring=[list(cell_type_u_s.gene_name.drop_duplicates())[0]]
 
-datamodule=build_datamodule(cell_type_u_s,False,True,0.125,True,gene_list=gene_list_buring) #type is feedData
+gene_list_batch=gene_list[id_range[0]:id_range[1]]
+
+# print("wtf is a buring")
+# print(gene_list_buring)
+
+datamodule=build_datamodule(cell_type_u_s,False,True,0.125,True,gene_list=gene_list_batch) #type is feedData
 # print("fit fit")
 # print(datamodule.fit_dataset.data_fit)
 # print("fit pred")

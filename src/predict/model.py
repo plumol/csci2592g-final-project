@@ -26,8 +26,10 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 import pkg_resources
 import warnings
+import traceback
 
 import dgl
+from dgl.nn.pytorch.conv import GATConv
 from scipy.spatial.distance import cdist
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -50,52 +52,91 @@ from sampling import *
 #         return self.gat_layer(x, edge_index)
     
 class GATLayer(nn.Module):
-
-    """Define network structure.
-    """
-
-    def __init__(self, g, in_dim, out_dim):
+    # in_feats = 2 bc each node captures 2 values (s, us) -> point in 2d space.
+    # num_heads...4? lol why not.
+    # dropout...0.5?
+    def __init__(self, in_feats, h1, h2, num_heads, dropout):
         super().__init__()
-        self.g = g
-        self.fc = nn.Linear(in_dim, out_dim, bias=False)
-        self.attn_fc = nn.Linear(2 * out_dim, 1, bias=False)
-        self.reset_parameters()
+        self.conv1 = GATConv(
+            in_feats=in_feats,
+            out_feats=num_heads * h1,
+            num_heads=1,
+            attn_drop=dropout,
+            activation=F.elu
+        )
+        self.conv2 = GATConv(
+            in_feats=num_heads * h1,
+            out_feats=h2,
+            num_heads=1,  
+            attn_drop=dropout
+        )
+        self.linear = nn.Linear(h2, 3)  
 
-    def forward(self, unsplice, splice, alpha0, beta0, gamma0, dt):
-        #print(f"dt is {dt}")
+    # change to graph, alpha, beta, gamma, dt
+    def forward(self, g, feat, unsplice, splice, alpha0, beta0, gamma0, dt):
+        print("forward")
         input = torch.tensor(np.array([np.array(unsplice), np.array(splice)]).T)
-        x = self.l1(input)
-        x = F.leaky_relu(x)
-        x = self.l2(x)
-        x = F.leaky_relu(x)
-        x = self.l3(x)
+
+        # print(g.shape)
+        print(feat.shape)
+        print(unsplice.shape)
+        print(splice.shape)
+        print(alpha0.shape)
+        x = self.conv1(g, feat)
+        x = F.elu(x)
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.conv2(g, x)
+        x = F.elu(x) 
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.linear(x)
+
         output = torch.sigmoid(x)
-        beta = output[:,0]
-        gamma = output[:,1]
-        alphas = output[:,2]
+        # print("output: ", output.shape)
+
+        beta = output[:,:,:,0]
+        gamma = output[:,:,:,1]
+        alphas = output[:,:,:,2]
+
+        # print("beta: ", beta.shape)
+        # print("gamma: ", gamma.shape)
+        # print("alphas: ", alphas.shape)
+
+        # print("beta0: ", beta0.shape)
+        # print("gamma0: ", gamma0.shape)
+        # print("alpha0: ", alpha0.shape)
 
         alphas = alphas * alpha0
         beta =  beta * beta0
         gamma = gamma * gamma0
 
+        alphas = alphas.squeeze()
+        beta = beta.squeeze()
+        gamma = gamma.squeeze()
+
+        print("beta: ", beta.shape)
+        print("gamma: ", gamma.shape)
+        print("alphas: ", alphas.shape)
+
+        print("unsplice: ", unsplice.shape)
+        print("splice: ", splice.shape)
+
+        """
+        beta:  torch.Size([94, 1, 3])
+        gamma:  torch.Size([94, 1, 3])
+        alphas:  torch.Size([94, 1, 3])
+        unsplice:  torch.Size([94])
+        splice:  torch.Size([94])
+        """
+
         unsplice_predict = unsplice + (alphas - beta*unsplice)*dt
         splice_predict = splice + (beta*unsplice - gamma*splice)*dt
+        print("up", unsplice_predict.shape)
+        print("sp", splice_predict.shape)
         return unsplice_predict, splice_predict, alphas, beta, gamma
+        
+        
 
-    def save(self, model_path):
-        torch.save({
-            "l1": self.l1,
-            "l2": self.l2,
-            "l3": self.l3
-        }, model_path)
-
-    def load(self, model_path):
-        checkpoint = torch.load(model_path)
-        self.l1 = checkpoint["l1"]
-        self.l2 = checkpoint["l2"]
-        self.l3 = checkpoint["l3"]
-
-class DNN_module(nn.Module):
+class GATModule(nn.Module):
     '''
     calculate loss function
     load network "DNN_layer"
@@ -107,6 +148,8 @@ class DNN_module(nn.Module):
         self.n_neighbors = n_neighbors
 
     def velocity_calculate(self, 
+                           g, 
+                           feat,
                            unsplice, 
                            splice, 
                            alpha0, 
@@ -145,7 +188,11 @@ class DNN_module(nn.Module):
         unsplice = torch.tensor(expr['unsplice'])
         splice = torch.tensor(expr['splice'])
         indices = torch.tensor(indices)
-        unsplice_predict, splice_predict, alphas, beta, gamma = self.module(unsplice, splice, alpha0, beta0, gamma0, dt)
+
+        # g, feat = make_graph(unsplice, splice)
+        unsplice_predict, splice_predict, alphas, beta, gamma = self.module(g, feat, unsplice, splice, alpha0, beta0, gamma0, dt)
+
+        # unsplice_predict, splice_predict, alphas, beta, gamma = self.module(unsplice, splice, alpha0, beta0, gamma0, dt)
 
         def cosine_similarity(unsplice, splice, unsplice_predict, splice_predict, indices):
             """Cost function
@@ -160,8 +207,8 @@ class DNN_module(nn.Module):
             den[den==0] = -1
             cosine = torch.where(den!=-1, (unv*uv + snv*sv) / den, torch.tensor(1.)) # cosine: column -> individuel cell (cellI); row -> nearby cells of cell id ; value -> cosine between col and row cells
             cosine_max, cosine_max_idx = torch.max(cosine, dim=0)
-            cell_idx = torch.diag(indices[:, cosine_max_idx+1])
-            return 1 - cosine_max, cell_idx
+            # cell_idx = torch.diag(indices[:, cosine_max_idx+1])
+            return 1 - cosine_max
 
 
 
@@ -225,33 +272,6 @@ class DNN_module(nn.Module):
 
             cell_idx = torch.diag(indices[:, total_min_idx+1])
             return total_min, cell_idx
-
-        
-        def trace_cost(unsplice, splice, unsplice_predict, splice_predict, idx, version):
-
-            # This cost has been deprecated.
-
-            uv, sv = unsplice_predict-unsplice, splice_predict-splice
-            tan = torch.where(sv!=1000000, uv/sv, torch.tensor(0.00001))
-            atan_theta = torch.atan(tan) + torch.pi/2
-            atan_theta2=atan_theta[idx]
-            atan_theta3 = atan_theta[idx[idx]]
-            if version=="v1":
-                cost = atan_theta2/atan_theta+atan_theta3/atan_theta2
-            elif version=="v2":
-                cost=torch.where(atan_theta<atan_theta2, 1, 0)+torch.where(atan_theta2<atan_theta3, 1, 0) 
-                
-            return(cost)
-
-        def corrcoef_cost(alphas, unsplice, beta, splice):
-
-            # This cost has been deprecated.
-            
-            corrcoef1 = torch.corrcoef(torch.tensor([alphas.detach().numpy(),unsplice.detach().numpy()]))[1,0]
-            corrcoef2 = torch.corrcoef(torch.tensor([beta.detach().numpy(), splice.detach().numpy()]))[1,0]
-            corrcoef = corrcoef1 + corrcoef2
-            cost=torch.where(corrcoef>=torch.tensor(0.0), torch.tensor(0.0), torch.tensor(-corrcoef))
-            return(cost)
         
         if trace_cost_ratio == 0 and corrcoef_cost_ratio == 0:
 
@@ -269,27 +289,7 @@ class DNN_module(nn.Module):
                 cost_fin = torch.mean(cost1)
 
         else: # trace cost and corrcoef cost have been deprecated.
-            # cosine cost
-            cost1,idx = cosine_similarity(unsplice, splice, unsplice_predict, splice_predict, indices)
-            cost1_normalize=(cost1-torch.min(cost1))/torch.max(cost1)
-            cost1_mean = torch.mean(cost1_normalize)
-
-            # trace cost
-            if trace_cost_ratio>0:
-                cost2 = trace_cost(unsplice, splice, unsplice_predict, splice_predict, idx,"v2")
-                cost2_normalize=(cost2-torch.min(cost2))/torch.max(cost2)
-                cost2_mean = torch.mean(cost2_normalize)
-                cost2_relu=(max((cost2_mean-cost2_cutoff), 0))
-
-            # corrcoef cost
-            if corrcoef_cost_ratio>0:
-                corrcoef_cost=corrcoef_cost(alphas, unsplice, beta, splice)
-
-            # sum all cost
-            cosin_cost_ratio=1-trace_cost_ratio-corrcoef_cost_ratio
-            cost_fin = cosin_cost_ratio*cost1_mean + \
-                       trace_cost_ratio*cost2_relu + \
-                       corrcoef_cost_ratio*corrcoef_cost
+            print("to complicated to do rn")
             
         return cost_fin, unsplice_predict, splice_predict, alphas, beta, gamma
 
@@ -299,13 +299,30 @@ class DNN_module(nn.Module):
         return(loss_df)
 
     def summary_para(self, unsplice, splice, unsplice_predict, splice_predict, alphas, beta, gamma, cost): 
+        print("hehe")
         cellDancer_df = pd.merge(pd.DataFrame(unsplice, columns=['unsplice']),pd.DataFrame(splice, columns=['splice']), left_index=True, right_index=True) 
+        print("hoho")
+        print(cellDancer_df.shape)
+        print(unsplice_predict.shape)
+
+       
+        # print(len(unsplice_predict))
+        # print(len(cellDancer_df['alpha']))
+        # print(len(alphas))
+        # print(len(cellDancer_df['cost']))
+        # print(len(cost))
         cellDancer_df['unsplice_predict'] = unsplice_predict
+        print("hoho1")
         cellDancer_df['splice_predict'] = splice_predict
+        print("hoho2")
         cellDancer_df['alpha'] = alphas
+        print("hoho3")
         cellDancer_df['beta'] = beta
+        print("hoho4")
         cellDancer_df['gamma'] = gamma
+        print("hoho5")
         cellDancer_df['cost'] = cost
+        print("ahhh")
         return cellDancer_df
 
 class ltModule(pl.LightningModule):
@@ -313,6 +330,8 @@ class ltModule(pl.LightningModule):
     train network using "DNN_module"
     '''
     def __init__(self, 
+                g=None,
+                feat=None,
                 backbone=None, 
                 initial_zoom=2, 
                 initial_strech=1,
@@ -327,6 +346,8 @@ class ltModule(pl.LightningModule):
                 average_cost_window_size=10,
                 smooth_weight=0.9):
         super().__init__()
+        self.g = g
+        self.feat = feat
         self.backbone = backbone
         self.validation_loss_df = pd.DataFrame()
         self.test_cellDancer_df = None
@@ -377,7 +398,7 @@ class ltModule(pl.LightningModule):
         gamma0 = np.float32(umax/smax*self.initial_strech)
 
         cost, unsplice_predict, splice_predict, alphas, beta, gamma = self.backbone.velocity_calculate( \
-                unsplice, splice, alpha0, beta0, gamma0, self.dt, embedding1, embedding2, \
+                self.g, self.feat, unsplice, splice, alpha0, beta0, gamma0, self.dt, embedding1, embedding2, \
                 loss_func = self.loss_func, \
                 cost2_cutoff = self.cost2_cutoff, \
                 trace_cost_ratio = self.trace_cost_ratio, \
@@ -443,26 +464,30 @@ class ltModule(pl.LightningModule):
                 self.validation_loss_df = self.validation_loss_df.append(loss_df)
 
     def test_step(self, batch, batch_idx):
+        print("here!")
         unsplices, splices, gene_names, unsplicemaxs, splicemaxs, embedding1s, embedding2s = batch
+        print("h2!")
         unsplice, splice, gene_name, unsplicemax, splicemax, embedding1, embedding2  = unsplices[0], splices[0], gene_names[0], unsplicemaxs[0], splicemaxs[0], embedding1s[0], embedding2s[0]
+        print("h3!")
+
         umax = unsplicemax
         smax = splicemax
         alpha0 = np.float32(umax*2)
         beta0 = np.float32(1.0)
         gamma0 = np.float32(umax/smax)
-
+        print("h4!")
         cost, unsplice_predict, splice_predict, alphas, beta, gamma = self.backbone.velocity_calculate( \
-                unsplice, splice, alpha0, beta0, gamma0, self.dt, embedding1, embedding2, \
+                self.g, self.feat, unsplice, splice, alpha0, beta0, gamma0, self.dt, embedding1, embedding2, \
                 loss_func = self.loss_func, \
                 cost2_cutoff = self.cost2_cutoff, \
                 trace_cost_ratio = self.trace_cost_ratio, \
                 corrcoef_cost_ratio=self.corrcoef_cost_ratio)
-
+        print("h5!")
         self.test_cellDancer_df= self.backbone.summary_para(
             unsplice, splice, unsplice_predict.data.numpy(), splice_predict.data.numpy(), 
             alphas.data.numpy(), beta.data.numpy(), gamma.data.numpy(), 
             cost.data.numpy())
-        
+        print("h6!")
         self.test_cellDancer_df.insert(0, "gene_name", gene_name)
         self.test_cellDancer_df.insert(0, "cellIndex", self.test_cellDancer_df.index)
 
@@ -577,9 +602,34 @@ class graphData(pl.LightningDataModule):
         return DataLoader(self.fit_dataset,num_workers=0)
     def test_dataloader(self):
         return DataLoader(self.predict_dataset,num_workers=0,)
+    
+def make_graph(unsplice, splice):
+    num_nodes = len(unsplice)
+
+    g = dgl.DGLGraph()
+    g.add_nodes(num_nodes)
+
+    node_pairs = np.column_stack((unsplice, splice))
+
+    # Calculate Euclidean distances between all pairs of nodes
+    distances = cdist(node_pairs, node_pairs)
+    print(distances.shape)
+
+    # Iterate through each node and connect it to the closest nodes
+    for i in range(num_nodes):
+        closest_indices = np.argsort(distances[i])[1:31]
+
+        g.add_edges(i, closest_indices)
+        g.add_edges(closest_indices, i)
+    
+    feat = torch.tensor(node_pairs, dtype=torch.float32)
+    g.ndata['feat'] = feat
+
+    return g, feat
+
 
 def _train_thread(datamodule, 
-                  graphmodule,
+                #   graphmodule,
                   data_indices,
                   save_path=None,
                   max_epoches=None,
@@ -600,32 +650,20 @@ def _train_thread(datamodule,
         np.random.seed(seed)
 
         # iniate network (DNN_layer) and loss function (DynamicModule)
-        backbone = DNN_module(DNN_layer(100, 100), n_neighbors=n_neighbors)
-        model = ltModule(backbone=backbone, dt=dt, learning_rate=learning_rate, loss_func=loss_func)
-
         selected_data = datamodule.subset(data_indices)
         
         unsplice, splice, this_gene_name, unsplicemax, splicemax, embedding1, embedding2=selected_data.fit_dataset.__getitem__(0)
 
-        # ADD: Making graph... 
-        num_nodes = len(unsplice)
+        g, feat = make_graph(unsplice, splice)
 
-        g = dgl.DGLGraph()
-        g.add_nodes(num_nodes)
+        backbone = GATModule(GATLayer(2, 50, 50, 4, 0.5), n_neighbors=n_neighbors)
+        model = ltModule(g=g, feat=feat, backbone=backbone, dt=dt, learning_rate=learning_rate, loss_func=loss_func)
 
-        node_pairs = np.column_stack((unsplice, splice))
+        # selected_data = datamodule.subset(data_indices)
+        
+        # unsplice, splice, this_gene_name, unsplicemax, splicemax, embedding1, embedding2=selected_data.fit_dataset.__getitem__(0)
 
-        # Calculate Euclidean distances between all pairs of nodes
-        distances = cdist(node_pairs, node_pairs)
-        print(distances.shape)
-
-        # Iterate through each node and connect it to the closest nodes
-        for i in range(num_nodes):
-            closest_indices = np.argsort(distances[i])[1:31]
-
-            g.add_edges(i, closest_indices)
-            g.add_edges(closest_indices, i)
-        # ---------------------------------------------------------
+        # g = make_graph(unsplice, splice)
 
         data_df=pd.DataFrame({'unsplice':unsplice,'splice':splice,'embedding1':embedding1,'embedding2':embedding2})
         data_df['gene_name']=this_gene_name
@@ -644,16 +682,18 @@ def _train_thread(datamodule,
             sampling_ixs_select_model=list(data_df.index)
             
         gene_downsampling=downsampling(data_df=data_df, gene_list=[this_gene_name], downsampling_ixs=sampling_ixs_select_model)
+
+        
         if ini_model=='circle':
             model_path=model_path=pkg_resources.resource_stream(__name__,os.path.join('model', 'circle.pt')).name
         if ini_model=='branch':
             model_path=model_path=pkg_resources.resource_stream(__name__,os.path.join('model', 'branch.pt')).name
         else:
             model_path=select_initial_net(this_gene_name, gene_downsampling, data_df)
-        model.load(model_path)
+
+        # model.load(model_path)
 
         early_stop_callback = EarlyStopping(monitor="loss", min_delta=0.0, patience=patience,mode='min')
-
         if check_val_every_n_epoch is None:
             # not use early stop
             trainer = pl.Trainer(
@@ -676,7 +716,6 @@ def _train_thread(datamodule,
                 enable_model_summary=False,
                 callbacks=[early_stop_callback]
                 )
-
         if max_epoches > 0:
             trainer.fit(model, selected_data)   # train network
 
@@ -684,17 +723,16 @@ def _train_thread(datamodule,
         
         if(model_save_path != None):
             model.save(model_save_path)
-
         loss_df = model.validation_loss_df
         cellDancer_df = model.test_cellDancer_df
 
-        if norm_u_s:
-            cellDancer_df.unsplice=cellDancer_df.unsplice*unsplicemax
-            cellDancer_df.splice=cellDancer_df.splice*splicemax
-            cellDancer_df.unsplice_predict=cellDancer_df.unsplice_predict*unsplicemax
-            cellDancer_df.splice_predict=cellDancer_df.splice_predict*splicemax
-            cellDancer_df.beta=cellDancer_df.beta*unsplicemax
-            cellDancer_df.gamma=cellDancer_df.gamma*splicemax
+        # if norm_u_s:
+        #     cellDancer_df.unsplice=cellDancer_df.unsplice*unsplicemax
+        #     cellDancer_df.splice=cellDancer_df.splice*splicemax
+        #     cellDancer_df.unsplice_predict=cellDancer_df.unsplice_predict*unsplicemax
+        #     cellDancer_df.splice_predict=cellDancer_df.splice_predict*splicemax
+        #     cellDancer_df.beta=cellDancer_df.beta*unsplicemax
+        #     cellDancer_df.gamma=cellDancer_df.gamma*splicemax
 
         if(model_save_path != None):
             model.save(model_save_path)
@@ -703,11 +741,13 @@ def _train_thread(datamodule,
         header_cellDancer_df=['cellIndex','gene_name','unsplice','splice','unsplice_predict','splice_predict','alpha','beta','gamma','loss']
         
         loss_df.to_csv(os.path.join(save_path,'TEMP', ('loss'+'_'+this_gene_name+'.csv')),header=header_loss_df,index=False)
-        cellDancer_df.to_csv(os.path.join(save_path,'TEMP', ('cellDancer_estimation_'+this_gene_name+'.csv')),header=header_cellDancer_df,index=False)
+        # cellDancer_df.to_csv(os.path.join(save_path,'TEMP', ('cellDancer_estimation_'+this_gene_name+'.csv')),header=header_cellDancer_df,index=False)
         
         return None
 
-    except:
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        traceback.print_exc() 
         return this_gene_name
 
 
@@ -753,36 +793,36 @@ def build_datamodule(cell_type_u_s,
 
     return(feed_data)
 
-def build_graphmodule(cell_type_u_s,
-                   speed_up,
-                   norm_u_s,
-                   permutation_ratio, 
-                   norm_cell_distribution=False, 
-                   gene_list=None,
-                   downsample_method='neighbors',
-                   n_neighbors_downsample=30,
-                   step=(200,200),
-                   downsample_target_amount=None):
+# def build_graphmodule(cell_type_u_s,
+#                    speed_up,
+#                    norm_u_s,
+#                    permutation_ratio, 
+#                    norm_cell_distribution=False, 
+#                    gene_list=None,
+#                    downsample_method='neighbors',
+#                    n_neighbors_downsample=30,
+#                    step=(200,200),
+#                    downsample_target_amount=None):
     
-    '''
-    set fitting data, data to be predicted, and sampling ratio when fitting
-    '''
-    step_i=step[0]
-    step_j=step[1]
+#     '''
+#     set fitting data, data to be predicted, and sampling ratio when fitting
+#     '''
+#     step_i=step[0]
+#     step_j=step[1]
     
-    if gene_list is None:
-        data_df=cell_type_u_s[['gene_name', 'unsplice','splice','embedding1','embedding2','cellID']]
-    else:
-        data_df=cell_type_u_s[['gene_name', 'unsplice','splice','embedding1','embedding2','cellID']][cell_type_u_s.gene_name.isin(gene_list)]
+#     if gene_list is None:
+#         data_df=cell_type_u_s[['gene_name', 'unsplice','splice','embedding1','embedding2','cellID']]
+#     else:
+#         data_df=cell_type_u_s[['gene_name', 'unsplice','splice','embedding1','embedding2','cellID']][cell_type_u_s.gene_name.isin(gene_list)]
 
-    if speed_up:
-        # no speeding anything up for now -jenny
-        print("TODO: Figue out speed up (or don't if no time) later.")
-        pass
-    else:
-        feed_data = feedData(data_fit = data_df, data_predict=data_df, permutation_ratio=permutation_ratio,norm_u_s=norm_u_s,norm_cell_distribution=norm_cell_distribution) # default 
+#     if speed_up:
+#         # no speeding anything up for now -jenny
+#         print("TODO: Figue out speed up (or don't if no time) later.")
+#         pass
+#     else:
+#         feed_data = feedData(data_fit = data_df, data_predict=data_df, permutation_ratio=permutation_ratio,norm_u_s=norm_u_s,norm_cell_distribution=norm_cell_distribution) # default 
 
-    return(feed_data)
+#     return(feed_data)
 
 
 def velocity(
@@ -870,12 +910,12 @@ def velocity(
     # buring
     gene_list_buring=[list(cell_type_u_s.gene_name.drop_duplicates())[0]]
     datamodule=build_datamodule(cell_type_u_s,speed_up,norm_u_s,permutation_ratio,norm_cell_distribution,gene_list=gene_list_buring)
-    graphmodule=build_graphmodule(cell_type_u_s,speed_up,norm_u_s,permutation_ratio,norm_cell_distribution,gene_list=gene_list_buring)
+    # graphmodule=build_graphmodule(cell_type_u_s,speed_up,norm_u_s,permutation_ratio,norm_cell_distribution,gene_list=gene_list_buring)
 
     result = Parallel(n_jobs=n_jobs, backend="loky")(
         delayed(_train_thread)(
             datamodule = datamodule,
-            graphmodule = graphmodule,
+            # graphmodule = graphmodule,
             data_indices=[data_index], 
             max_epoches=max_epoches,
             check_val_every_n_epoch=check_val_every_n_epoch,
@@ -993,21 +1033,29 @@ def select_initial_net(gene, gene_downsampling, data_df):
     circle.pt is the model for single kinetic
     branch.pt is multiple kinetic
     '''
+    print("1")
     gene_u_s = gene_downsampling[gene_downsampling.gene_name==gene]
     gene_u_s_full = data_df[data_df.gene_name==gene]
-    
+    print("2")
+
     s_max=np.max(gene_u_s.splice)
     u_max = np.max(gene_u_s.unsplice)
     s_max_90per = 0.9*s_max
     u_max_90per = 0.9*u_max
-    
+    print("3")
+
     gene_u_s_full['position'] = 'position_cells'
     gene_u_s_full.loc[(gene_u_s_full.splice>s_max_90per) & (gene_u_s_full.unsplice>u_max_90per), 'position'] = 'cells_corner'
+    print("4")
 
     if gene_u_s_full.loc[gene_u_s_full['position']=='cells_corner'].shape[0]>0.001*gene_u_s_full.shape[0]:
+        print("5")
+
         # model in circle shape
         model_path=pkg_resources.resource_stream(__name__,os.path.join('model', 'circle.pt')).name
     else:
+        print("6")
         # model in seperated branch shape
         model_path=pkg_resources.resource_stream(__name__,os.path.join('model', 'branch.pt')).name
     return(model_path)
+
