@@ -27,7 +27,6 @@ from tqdm import tqdm
 import pkg_resources
 import warnings
 import traceback
-import dgl
 
 
 from dgl.nn.pytorch.conv import GATConv
@@ -593,31 +592,7 @@ class feedData(pl.LightningDataModule):
         return DataLoader(self.fit_dataset,num_workers=0)
     def test_dataloader(self):
         return DataLoader(self.fit_dataset,num_workers=0,)
-    
-class graphData(pl.LightningDataModule):
-    '''
-    load training and test data
-    '''
-    def __init__(self, data_fit=None, data_predict=None,permutation_ratio=1,norm_u_s=True,norm_cell_distribution=False):
-        super().__init__()
 
-        self.fit_dataset = getItem(data_fit=data_fit, data_predict=data_predict,datastatus="fit_dataset", permutation_ratio=permutation_ratio,norm_u_s=norm_u_s,norm_cell_distribution=norm_cell_distribution)
-        
-        self.predict_dataset = getItem(data_fit=data_fit, data_predict=data_predict,datastatus="predict_dataset", permutation_ratio=permutation_ratio,norm_u_s=norm_u_s)
-
-    def subset(self, indices):
-        import copy
-        temp = copy.copy(self)
-        temp.fit_dataset = Subset(self.fit_dataset, indices)
-        temp.predict_dataset = Subset(self.predict_dataset, indices)
-        return temp
-
-    def train_dataloader(self):
-        return DataLoader(self.fit_dataset,num_workers=0)
-    def val_dataloader(self):
-        return DataLoader(self.fit_dataset,num_workers=0)
-    def test_dataloader(self):
-        return DataLoader(self.predict_dataset,num_workers=0,)
     
 def make_graph(unsplice, splice):
     num_nodes = len(unsplice)

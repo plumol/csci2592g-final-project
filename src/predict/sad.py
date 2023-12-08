@@ -27,11 +27,9 @@ from tqdm import tqdm
 import pkg_resources
 import warnings
 import traceback
+
 import dgl
-
-
 from dgl.nn.pytorch.conv import GATConv
-from dgl.dataloading import GraphDataLoader
 from scipy.spatial.distance import cdist
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -76,14 +74,14 @@ class GATLayer(nn.Module):
 
     # change to graph, alpha, beta, gamma, dt
     def forward(self, g, feat, unsplice, splice, alpha0, beta0, gamma0, dt):
-        # print("forward")
-        # feat = torch.tensor(np.array([np.array(unsplice), np.array(splice)]).T)
-        # g, feat = make_graph(unsplice, splice)
+        print("forward")
+        input = torch.tensor(np.array([np.array(unsplice), np.array(splice)]).T)
+
         # print(g.shape)
         print(feat.shape)
         print(unsplice.shape)
-        # print(splice.shape)
-        # print(alpha0.shape)
+        print(splice.shape)
+        print(alpha0.shape)
         x = self.conv1(g, feat)
         x = F.elu(x)
         x = F.dropout(x, p=0.5, training=self.training)
@@ -93,7 +91,7 @@ class GATLayer(nn.Module):
         x = self.linear(x)
 
         output = torch.sigmoid(x)
-        print("output: ", output.shape)
+        # print("output: ", output.shape)
 
         beta = output[:,:,:,0]
         gamma = output[:,:,:,1]
@@ -115,9 +113,9 @@ class GATLayer(nn.Module):
         beta = beta.squeeze()
         gamma = gamma.squeeze()
 
-        # print("beta: ", beta.shape)
-        # print("gamma: ", gamma.shape)
-        # print("alphas: ", alphas.shape)
+        print("beta: ", beta.shape)
+        print("gamma: ", gamma.shape)
+        print("alphas: ", alphas.shape)
 
         print("unsplice: ", unsplice.shape)
         print("splice: ", splice.shape)
@@ -132,8 +130,8 @@ class GATLayer(nn.Module):
 
         unsplice_predict = unsplice + (alphas - beta*unsplice)*dt
         splice_predict = splice + (beta*unsplice - gamma*splice)*dt
-        # print("up", unsplice_predict.shape)
-        # print("sp", splice_predict.shape)
+        print("up", unsplice_predict.shape)
+        print("sp", splice_predict.shape)
         return unsplice_predict, splice_predict, alphas, beta, gamma
         
         
@@ -198,7 +196,7 @@ class GATModule(nn.Module):
         # g, feat = make_graph(unsplice, splice)
         unsplice_predict, splice_predict, alphas, beta, gamma = self.module(g, feat, unsplice, splice, alpha0, beta0, gamma0, dt)
 
-        # print("In vc, ", unsplice_predict.shape)
+        print("In vc, ", unsplice_predict.shape)
 
         # unsplice_predict, splice_predict, alphas, beta, gamma = self.module(unsplice, splice, alpha0, beta0, gamma0, dt)
 
@@ -307,14 +305,30 @@ class GATModule(nn.Module):
         return(loss_df)
 
     def summary_para(self, unsplice, splice, unsplice_predict, splice_predict, alphas, beta, gamma, cost): 
+        print("hehe")
         cellDancer_df = pd.merge(pd.DataFrame(unsplice, columns=['unsplice']),pd.DataFrame(splice, columns=['splice']), left_index=True, right_index=True) 
+        print("hoho")
+        print(cellDancer_df.shape)
+        print(unsplice_predict.shape)
 
+       
+        # print(len(unsplice_predict))
+        # print(len(cellDancer_df['alpha']))
+        # print(len(alphas))
+        # print(len(cellDancer_df['cost']))
+        # print(len(cost))
         cellDancer_df['unsplice_predict'] = unsplice_predict
+        print("hoho1")
         cellDancer_df['splice_predict'] = splice_predict
+        print("hoho2")
         cellDancer_df['alpha'] = alphas
+        print("hoho3")
         cellDancer_df['beta'] = beta
+        print("hoho4")
         cellDancer_df['gamma'] = gamma
+        print("hoho5")
         cellDancer_df['cost'] = cost
+        print("ahhh")
         return cellDancer_df
 
 class ltModule(pl.LightningModule):
@@ -458,7 +472,7 @@ class ltModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         unsplices, splices, gene_names, unsplicemaxs, splicemaxs, embedding1s, embedding2s = batch
         unsplice, splice, gene_name, unsplicemax, splicemax, embedding1, embedding2  = unsplices[0], splices[0], gene_names[0], unsplicemaxs[0], splicemaxs[0], embedding1s[0], embedding2s[0]
-        # print("test step, ", unsplices.shape)
+        print("test step, ", unsplices.shape)
 
         umax = unsplicemax
         smax = splicemax
@@ -466,14 +480,13 @@ class ltModule(pl.LightningModule):
         beta0 = np.float32(1.0)
         gamma0 = np.float32(umax/smax)
         print("Vel calculate in test_step: ")
-        print(unsplice.shape)
         cost, unsplice_predict, splice_predict, alphas, beta, gamma = self.backbone.velocity_calculate( \
                 self.g, self.feat, unsplice, splice, alpha0, beta0, gamma0, self.dt, embedding1, embedding2, \
                 loss_func = self.loss_func, \
                 cost2_cutoff = self.cost2_cutoff, \
                 trace_cost_ratio = self.trace_cost_ratio, \
                 corrcoef_cost_ratio=self.corrcoef_cost_ratio)
-        # print("Vel calculate done. ")
+        print("Vel calculate done. ")
         self.test_cellDancer_df= self.backbone.summary_para(
             unsplice, splice, unsplice_predict.data.numpy(), splice_predict.data.numpy(), 
             alphas.data.numpy(), beta.data.numpy(), gamma.data.numpy(), 
@@ -484,7 +497,6 @@ class ltModule(pl.LightningModule):
 
 class getItem(Dataset): 
     def __init__(self, data_fit=None, data_predict=None,datastatus="predict_dataset", permutation_ratio=0.1,norm_u_s=True,norm_cell_distribution=False): 
-
         self.data_fit=data_fit
         self.data_predict=data_predict
         self.datastatus=datastatus
@@ -495,10 +507,6 @@ class getItem(Dataset):
         self.norm_max_splice=None
         self.norm_cell_distribution=norm_cell_distribution
 
-        # E: --
-        self.fit_graphs = {}
-        self.pred_graphs = {}
-
     def __len__(self):
         return len(self.gene_name) # gene count
 
@@ -507,7 +515,6 @@ class getItem(Dataset):
 
         if self.datastatus=="fit_dataset":
             data_fitting=self.data_fit[self.data_fit.gene_name==gene_name] # unsplice & splice for cells for one gene
-            
             if self.norm_cell_distribution==True:    # select cells to train using norm_cell_distribution methods
                 unsplice = data_fitting.unsplice
                 splice = data_fitting.splice
@@ -545,26 +552,7 @@ class getItem(Dataset):
         embedding1 = np.array(data.embedding1.copy().astype(np.float32))
         embedding2 = np.array(data.embedding2.copy().astype(np.float32))
 
-        
-        # E: --
-        if gene_name not in self.fit_graphs:
-            if self.datastatus=="fit_dataset":
-                g, feat = make_graph(unsplice, splice)
-                self.fit_graphs[gene_name] = [g, feat]
-            else:
-                g, feat = make_graph(unsplice, splice)
-                self.pred_graphs[gene_name] = [g, feat]
-
         return unsplice, splice, gene_name, unsplicemax, splicemax, embedding1, embedding2
-    
-    def get_gf(self, idx):
-        gene_name = self.gene_name[idx]
-        if self.datastatus=="fit_dataset":
-            return self.fit_graphs[gene_name][0], self.fit_graphs[gene_name][1]
-        else:
-            return self.pred_graphs[gene_name][0], self.pred_graphs[gene_name][1]
-            
-            
 
 
 
@@ -577,7 +565,7 @@ class feedData(pl.LightningDataModule):
 
         self.fit_dataset = getItem(data_fit=data_fit, data_predict=data_predict,datastatus="fit_dataset", permutation_ratio=permutation_ratio,norm_u_s=norm_u_s,norm_cell_distribution=norm_cell_distribution)
         
-        self.predict_dataset = getItem(data_fit=data_fit, data_predict=data_predict,datastatus="predict_dataset", permutation_ratio=permutation_ratio,norm_u_s=norm_u_s)
+        self.predict_dataset = getItem(data_fit=data_fit, data_predict=data_predict,datastatus="predict_dataset", permutation_ratio=permutation_ratio,norm_u_s=norm_u_s,norm_cell_distribution=norm_cell_distribution)
         # E: Added norm_cell...
 
     def subset(self, indices):
@@ -592,6 +580,7 @@ class feedData(pl.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(self.fit_dataset,num_workers=0)
     def test_dataloader(self):
+        # E: cheated from pred
         return DataLoader(self.fit_dataset,num_workers=0,)
     
 class graphData(pl.LightningDataModule):
@@ -629,7 +618,7 @@ def make_graph(unsplice, splice):
 
     # Calculate Euclidean distances between all pairs of nodes
     distances = cdist(node_pairs, node_pairs)
-    # print(distances.shape)
+    print(distances.shape)
 
     # Iterate through each node and connect it to the closest nodes
     for i in range(num_nodes):
@@ -643,15 +632,8 @@ def make_graph(unsplice, splice):
 
     return g, feat
 
-def create_subgraph(graph, input_nodes, num_neighbors):
-    sampled_blocks = dgl.sampling.sample_neighbors(graph, input_nodes, num_neighbors)
-    return sampled_blocks
-
 
 def _train_thread(datamodule, 
-                #   graphmodule,
-                #   g,
-                #   feat,
                   data_indices,
                   save_path=None,
                   max_epoches=None,
@@ -670,19 +652,15 @@ def _train_thread(datamodule,
         torch.manual_seed(seed)
         random.seed(seed)
         np.random.seed(seed)
-        # print("IN TRAIN THREAD:")
-        # print(data_indices)
+        print("IN TRAIN THREAD:")
+        print(data_indices)
 
         # iniate network (DNN_layer) and loss function (DynamicModule)
         selected_data = datamodule.subset(data_indices)
         
         unsplice, splice, this_gene_name, unsplicemax, splicemax, embedding1, embedding2=selected_data.fit_dataset.__getitem__(0)
 
-        unsplice1, splice1, this_gene_name1, unsplicemax1, splicemax1, embedding11, embedding21=selected_data.predict_dataset.__getitem__(0)
-
-        # g, feat = (selected_data.fit_dataset).get_gf(0)
-        g, feat = make_graph(unsplice1, splice1)
-
+        g, feat = make_graph(unsplice, splice)
 
         backbone = GATModule(GATLayer(2, 50, 50, 4, 0.5), n_neighbors=n_neighbors)
         model = ltModule(g=g, feat=feat, backbone=backbone, dt=dt, learning_rate=learning_rate, loss_func=loss_func)
@@ -757,7 +735,6 @@ def _train_thread(datamodule,
         loss_df = model.validation_loss_df
         cellDancer_df = model.test_cellDancer_df
 
-        # --
         # if norm_u_s:
         #     cellDancer_df.unsplice=cellDancer_df.unsplice*unsplicemax
         #     cellDancer_df.splice=cellDancer_df.splice*splicemax
@@ -773,8 +750,7 @@ def _train_thread(datamodule,
         header_cellDancer_df=['cellIndex','gene_name','unsplice','splice','unsplice_predict','splice_predict','alpha','beta','gamma','loss']
         
         loss_df.to_csv(os.path.join(save_path,'TEMP', ('loss'+'_'+this_gene_name+'.csv')),header=header_loss_df,index=False)
-        # --
-        cellDancer_df.to_csv(os.path.join(save_path,'TEMP', ('cellDancer_estimation_'+this_gene_name+'.csv')),header=header_cellDancer_df,index=False)
+        # cellDancer_df.to_csv(os.path.join(save_path,'TEMP', ('cellDancer_estimation_'+this_gene_name+'.csv')),header=header_cellDancer_df,index=False)
         
         return None
 
@@ -928,96 +904,26 @@ def velocity(
 
     try:shutil.rmtree(os.path.join(save_path,'TEMP'))
     except:os.mkdir(os.path.join(save_path,'TEMP'))
-    
-    # set gene_list if not given
-    if gene_list is None:
-        gene_list=list(cell_type_u_s.gene_name.drop_duplicates())
-    else:
-        cell_type_u_s=cell_type_u_s[cell_type_u_s.gene_name.isin(gene_list)]
-        all_gene_name_cell_type_u_s=list(cell_type_u_s.gene_name.drop_duplicates())
-        gene_not_in_cell_type_u_s= list(set(gene_list).difference(set(all_gene_name_cell_type_u_s)))
-        gene_list=list(list(set(all_gene_name_cell_type_u_s).intersection(set(gene_list))))
-        if len(gene_not_in_cell_type_u_s)>0: print(gene_not_in_cell_type_u_s," not in the data cell_type_u_s")
-
-    cell_type_u_s=cell_type_u_s.reset_index(drop=True)
-    # buring
-    gene_list_buring=[list(cell_type_u_s.gene_name.drop_duplicates())[0]]
-    datamodule=build_datamodule(cell_type_u_s,speed_up,norm_u_s,permutation_ratio,norm_cell_distribution,gene_list=gene_list_buring)
-    
-    # graphmodule=build_graphmodule(cell_type_u_s,speed_up,norm_u_s,permutation_ratio,norm_cell_distribution,gene_list=gene_list_buring)
-
-    result = Parallel(n_jobs=n_jobs, backend="loky")(
-        delayed(_train_thread)(
-            datamodule = datamodule,
-            # graphmodule = graphmodule,
-            data_indices=[data_index], 
-            max_epoches=max_epoches,
-            check_val_every_n_epoch=check_val_every_n_epoch,
-            patience=patience,
-            learning_rate=learning_rate,
-            n_neighbors=n_neighbors,
-            dt=dt,
-            loss_func=loss_func,
-            save_path=save_path,
-            norm_u_s=norm_u_s)
-        for data_index in range(0,len(gene_list_buring)))
 
     # clean directory
     shutil.rmtree(os.path.join(save_path,'TEMP'))
     os.mkdir(os.path.join(save_path,'TEMP'))
     
-    data_len = len(gene_list)
-    
-    id_ranges=list()
-    if n_jobs==-1:
-        interval=os.cpu_count()
-    else:
-        interval=n_jobs
-    for i in range(0,data_len,interval):
-        idx_start=i
-        if data_len<i+interval:
-            idx_end=data_len
-        else:
-            idx_end=i+interval
-        id_ranges.append((idx_start,idx_end))
+    datamodule=build_datamodule(cell_type_u_s,speed_up,norm_u_s,permutation_ratio,norm_cell_distribution,gene_list=gene_list_batch)
 
+    _train_thread(
+        datamodule = datamodule,
+        data_indices=[0], 
+        max_epoches=max_epoches,
+        check_val_every_n_epoch=check_val_every_n_epoch,
+        n_neighbors=n_neighbors,
+        dt=dt,
+        loss_func=loss_func,
+        learning_rate=learning_rate,
+        patience=patience,
+        save_path=save_path,
+        norm_u_s=norm_u_s)
 
-    print('Arranging genes for parallel job.')
-    if len(id_ranges)==1:
-        if id_ranges==1:
-            print(data_len,' gene was arranged to ',len(id_ranges),' portion.')
-        else:
-            print(data_len,' genes were arranged to ',len(id_ranges),' portion.')
-    else: 
-        print(data_len,' genes were arranged to ',len(id_ranges),' portions.')
-    
-    unpredicted_gene_lst=list()
-    for id_range in tqdm(id_ranges,desc="Velocity Estimation", total=len(id_ranges),position=1,leave=False, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}'):
-        gene_list_batch=gene_list[id_range[0]:id_range[1]]
-        datamodule=build_datamodule(cell_type_u_s,speed_up,norm_u_s,permutation_ratio,norm_cell_distribution,gene_list=gene_list_batch)
-
-        result = Parallel(n_jobs=n_jobs, backend="loky")(
-            delayed(_train_thread)(
-            datamodule = datamodule,
-            data_indices=[data_index], 
-            max_epoches=max_epoches,
-            check_val_every_n_epoch=check_val_every_n_epoch,
-            n_neighbors=n_neighbors,
-            dt=dt,
-            loss_func=loss_func,
-            learning_rate=learning_rate,
-            patience=patience,
-            save_path=save_path,
-            norm_u_s=norm_u_s)
-            for data_index in range(0,len(gene_list_batch)))
-
-        # unpredicted gene list
-        gene_name_lst=[x for x in result if x is not None]
-        for i in gene_name_lst:
-            unpredicted_gene_lst.append(i)
-    if len(unpredicted_gene_lst)!=0:
-        not_pred_err='Not predicted gene list:'+str(unpredicted_gene_lst)+'. Try visualizing the unspliced and spliced columns of the gene(s) to check the quality.'
-        logger_cd.error(not_pred_err)
 
     # summarize
     cellDancer_df = os.path.join(save_path,'TEMP', "cellDancer_estimation*.csv")
@@ -1067,22 +973,28 @@ def select_initial_net(gene, gene_downsampling, data_df):
     circle.pt is the model for single kinetic
     branch.pt is multiple kinetic
     '''
+    print("1")
     gene_u_s = gene_downsampling[gene_downsampling.gene_name==gene]
     gene_u_s_full = data_df[data_df.gene_name==gene]
+    print("2")
 
     s_max=np.max(gene_u_s.splice)
     u_max = np.max(gene_u_s.unsplice)
     s_max_90per = 0.9*s_max
     u_max_90per = 0.9*u_max
+    print("3")
 
     gene_u_s_full['position'] = 'position_cells'
     gene_u_s_full.loc[(gene_u_s_full.splice>s_max_90per) & (gene_u_s_full.unsplice>u_max_90per), 'position'] = 'cells_corner'
+    print("4")
 
     if gene_u_s_full.loc[gene_u_s_full['position']=='cells_corner'].shape[0]>0.001*gene_u_s_full.shape[0]:
+        print("5")
 
         # model in circle shape
         model_path=pkg_resources.resource_stream(__name__,os.path.join('model', 'circle.pt')).name
     else:
+        print("6")
         # model in seperated branch shape
         model_path=pkg_resources.resource_stream(__name__,os.path.join('model', 'branch.pt')).name
     return(model_path)
