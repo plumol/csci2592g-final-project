@@ -93,15 +93,17 @@ def train(g, features, labels, model):
     # features = g.ndata['feat'] 
     # labels = g.ndata["label"]["_N"].to("cuda")
     train_nid = torch.tensor(range(g.num_nodes())).type(torch.int64)
- 
-    for epoch in range(24):
+    
+    loss_list = []
+    for epoch in range(50):
         model.train()
         sampler = dgl.dataloading.MultiLayerNeighborSampler([15, 10])
         dataloader = dgl.dataloading.DataLoader(
             g, train_nid, sampler, use_ddp=False,
-            batch_size=1024, shuffle=True, drop_last=False, num_workers=0)
+            batch_size=4096, shuffle=True, drop_last=False, num_workers=0)
  
         total_loss = 0
+        
          
         for step, (input_nodes, output_nodes, blocks) in enumerate((dataloader)):
             batch_inputs = features[input_nodes]
@@ -125,10 +127,11 @@ def train(g, features, labels, model):
 
             # loss = F.mse_loss(batch_pred, batch_labels)
             total_loss += loss
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
- 
+        
  
         sampler = dgl.dataloading.NeighborSampler([-1,-1])
         dataloader = dgl.dataloading.DataLoader(g, train_nid, sampler,
@@ -137,9 +140,10 @@ def train(g, features, labels, model):
                                                 drop_last=False,
                                                 num_workers=0,
                                                 )
- 
+        loss_list.append(float(total_loss))
         # eval = evaluate(model, features, labels, dataloader)
         print("Epoch {:05d} | Loss {:.4f} ".format(epoch, total_loss))
+    return loss_list
  
  
 def evaluate(model, features, labels, dataloader):
@@ -204,7 +208,7 @@ def make_graph(unsplice, splice, embedding1, embedding2):
     return g, feat, labels
 
 
-cell_type_u_s_path = '/Users/jenniferli/Downloads/CSCI 2952G/GastrulationErythroid_cell_type_u_s.csv'
+cell_type_u_s_path = './data/GastrulationErythroid_cell_type_u_s.csv'
 
 g, f, labels, embedding1, embedding2 = None, None, None, None, None
 # Check if the processed data exists, if not, read and process the data
@@ -227,8 +231,16 @@ except FileNotFoundError:
         pickle.dump((cell_type_u_s, g, f, labels, embedding1, embedding2), file)
 
 model = GATLayer(100)
-train(g, f, labels, model)
+loss_list = train(g, f, labels, model)
 
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots()
+
+ax.plot(loss_list)
+ax.set_xlabel("Epoch")
+ax.set_ylabel("Loss")
+plt.show()
 
 
 
