@@ -52,6 +52,9 @@ class GATLayer(nn.Module):
         us = g[1].dstdata['feat'][:, 0]
         s = g[1].dstdata['feat'][:, 1]
 
+        e1 = g[1].dstdata['embedding1']
+        e2 = g[1].dstdata['embedding2']
+
         beta = h[:,:,:,0].squeeze()
         gamma = h[:,:,:,1].squeeze()
         alphas = h[:,:,:,2].squeeze()
@@ -60,11 +63,12 @@ class GATLayer(nn.Module):
         beta =  beta * beta0
         gamma = gamma * gamma0
 
-
         unsplice_predict = us + (alphas - beta*us)*dt
         splice_predict = s + (beta*us - gamma*s)*dt
 
-        return h.mean(dim=3).squeeze()
+        return unsplice_predict, splice_predict, e1, e2, us, s
+
+        # return h.mean(dim=3).squeeze()
 
 
 def cosine_similarity(unsplice, splice, unsplice_predict, splice_predict, indices):
@@ -72,12 +76,6 @@ def cosine_similarity(unsplice, splice, unsplice_predict, splice_predict, indice
     Return:
         list of cosine distance and a list of the index of the next cell
     """
-    # points = np.array([embedding1.numpy(), embedding2.numpy()]).transpose()
-
-    # self.n_neighbors=min((points.shape[0]-1), self.n_neighbors)
-    # nbrs = NearestNeighbors(n_neighbors=self.n_neighbors, algorithm='ball_tree').fit(points)
-    
-    # distances, indices = nbrs.kneighbors(points) 
     
     uv, sv = unsplice_predict-unsplice, splice_predict-splice # Velocity from (unsplice, splice) to (unsplice_predict, splice_predict)
     unv, snv = unsplice[indices.T[1:]] - unsplice, splice[indices.T[1:]] - splice # Velocity from (unsplice, splice) to its neighbors
@@ -86,8 +84,7 @@ def cosine_similarity(unsplice, splice, unsplice_predict, splice_predict, indice
     den[den==0] = -1
     cosine = torch.where(den!=-1, (unv*uv + snv*sv) / den, torch.tensor(1.)) # cosine: column -> individuel cell (cellI); row -> nearby cells of cell id ; value -> cosine between col and row cells
     cosine_max, cosine_max_idx = torch.max(cosine, dim=0)
-    cell_idx = torch.diag(indices[:, cosine_max_idx+1])
-
+    # cell_idx = torch.diag(indices[:, cosine_max_idx+1])
     return torch.mean(1 - cosine_max)
     
 
@@ -117,9 +114,16 @@ def train(g, features, labels, model):
             gamma0 = np.float32(umax/smax*1)
 
             # batch_pred = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
-            us_pred, s_pred = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
+            us_pred, s_pred, e1, e2, us, s = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
 
-            loss = F.mse_loss(batch_pred, batch_labels)
+            points = np.array([e1.numpy(), e2.numpy()]).transpose()
+            nbrs = NearestNeighbors(n_neighbors=30, algorithm='ball_tree').fit(points)
+            distances, indices = nbrs.kneighbors(points) 
+            indices = torch.tensor(indices)
+
+            loss = cosine_similarity(us, s, us_pred, s_pred, indices)
+
+            # loss = F.mse_loss(batch_pred, batch_labels)
             total_loss += loss
             optimizer.zero_grad()
             loss.backward()
@@ -134,15 +138,14 @@ def train(g, features, labels, model):
                                                 num_workers=0,
                                                 )
  
- 
-        mse = evaluate(model, features, labels, dataloader)
-        print("Epoch {:05d} | MSE {:.4f} | Loss {:.4f} ".format(epoch, mse, total_loss))
+        # eval = evaluate(model, features, labels, dataloader)
+        print("Epoch {:05d} | Loss {:.4f} ".format(epoch, total_loss))
  
  
 def evaluate(model, features, labels, dataloader):
     with torch.no_grad():
         model.eval()
-        ys = []
+        # ys = []
         y_hats = []
         for it, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
             with torch.no_grad():
@@ -155,7 +158,15 @@ def evaluate(model, features, labels, dataloader):
                 beta0 = np.float32(1.0)
                 gamma0 = np.float32(umax/smax*1)
 
-                ys.append(batch_labels)
+                us_pred, s_pred, e1, e2, us, s = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
+                points = np.array([e1.numpy(), e2.numpy()]).transpose()
+                nbrs = NearestNeighbors(n_neighbors=30, algorithm='ball_tree').fit(points)
+                distances, indices = nbrs.kneighbors(points) 
+                indices = torch.tensor(indices)
+
+                loss = cosine_similarity(us, s, us_pred, s_pred, indices)
+
+                # ys.append(batch_labels)
                 y_hats.append(model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5))
         # return F.accuracy()
         return F.mse_loss(torch.cat(y_hats), torch.cat(ys))
@@ -167,6 +178,7 @@ def make_graph(unsplice, splice, embedding1, embedding2):
 
     g = dgl.DGLGraph()
     g.add_nodes(num_nodes)
+
 
     node_pairs = np.column_stack((unsplice, splice))
 
@@ -186,19 +198,19 @@ def make_graph(unsplice, splice, embedding1, embedding2):
 
     g.ndata['feat'] = feat
     g.ndata['labels'] = labels
-    g.ndata['embedding1'] = embedding1
-    g.ndata['embedding2'] = embedding2
+    g.ndata['embedding1'] = torch.tensor(embedding1, dtype=torch.float32)
+    g.ndata['embedding2'] = torch.tensor(embedding2, dtype=torch.float32)
 
     return g, feat, labels
 
 
 cell_type_u_s_path = '/Users/jenniferli/Downloads/CSCI 2952G/GastrulationErythroid_cell_type_u_s.csv'
 
-g, f, labels = None, None, None
+g, f, labels, embedding1, embedding2 = None, None, None, None, None
 # Check if the processed data exists, if not, read and process the data
 try:
     with open('processed_data.pkl', 'rb') as file:
-        cell_type_u_s, g, f, labels = pickle.load(file)
+        cell_type_u_s, g, f, labels, embedding1, embedding2 = pickle.load(file)
 except FileNotFoundError:
     cell_type_u_s = pd.read_csv(cell_type_u_s_path)
     filtered_df = cell_type_u_s[cell_type_u_s['gene_name'] == 'Myo1b']
@@ -211,10 +223,8 @@ except FileNotFoundError:
 
     g, f, labels = make_graph(unsplice, splice, embedding1, embedding2)
     
-    # Save the processed data
     with open('processed_data.pkl', 'wb') as file:
-        pickle.dump((cell_type_u_s, g, f, labels), file)
-
+        pickle.dump((cell_type_u_s, g, f, labels, embedding1, embedding2), file)
 
 model = GATLayer(100)
 train(g, f, labels, model)
