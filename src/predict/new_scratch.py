@@ -56,9 +56,6 @@ class GATLayer(nn.Module):
         e1 = g[1].dstdata['embedding1']
         e2 = g[1].dstdata['embedding2']
 
-        cellID = g[1].dstdata['cellID']
-        clusters = g[1].dstdata['clusters']
-
         beta = h[:,:,:,0].squeeze()
         gamma = h[:,:,:,1].squeeze()
         alphas = h[:,:,:,2].squeeze()
@@ -70,7 +67,7 @@ class GATLayer(nn.Module):
         unsplice_predict = us + (alphas - beta*us)*dt
         splice_predict = s + (beta*us - gamma*s)*dt
 
-        return unsplice_predict, splice_predict, alphas, beta, gamma, e1, e2, us, s, cellID, clusters
+        return unsplice_predict, splice_predict, alphas, beta, gamma, e1, e2, us, s
 
         # return h.mean(dim=3).squeeze()
 
@@ -92,7 +89,7 @@ def cosine_similarity(unsplice, splice, unsplice_predict, splice_predict, indice
     return torch.mean(1 - cosine_max)
     
 
-def train(g, features, labels, model):
+def train(g, features, model):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     # features = g.ndata['feat'] 
     # labels = g.ndata["label"]["_N"].to("cuda")
@@ -111,7 +108,7 @@ def train(g, features, labels, model):
          
         for step, (input_nodes, output_nodes, blocks) in enumerate((dataloader)):
             batch_inputs = features[input_nodes]
-            batch_labels = labels[output_nodes]
+            # batch_labels = labels[output_nodes]
 
             unsplice, splice = batch_inputs[:, 0], batch_inputs[:, 1]
             umax, smax = max(unsplice), max(splice)
@@ -120,7 +117,7 @@ def train(g, features, labels, model):
             gamma0 = np.float32(umax/smax*1)
 
             # batch_pred = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
-            us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, cellID, clusters = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
+            us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
 
             points = np.array([e1.numpy(), e2.numpy()]).transpose()
             nbrs = NearestNeighbors(n_neighbors=30, algorithm='ball_tree').fit(points)
@@ -137,20 +134,20 @@ def train(g, features, labels, model):
             optimizer.step()
         
  
-        sampler = dgl.dataloading.NeighborSampler([-1,-1])
-        dataloader = dgl.dataloading.DataLoader(g, train_nid, sampler,
-                                                batch_size=1024,
-                                                shuffle=False,
-                                                drop_last=False,
-                                                num_workers=0,
-                                                )
+        # sampler = dgl.dataloading.NeighborSampler([-1,-1])
+        # dataloader = dgl.dataloading.DataLoader(g, train_nid, sampler,
+        #                                         batch_size=1024,
+        #                                         shuffle=False,
+        #                                         drop_last=False,
+        #                                         num_workers=0,
+        #                                         )
         loss_list.append(float(total_loss))
-        eval = evaluate(model, features, labels, dataloader)
+        # eval = evaluate(model, features, labels, dataloader)
         print("Epoch {:05d} | Loss {:.4f} ".format(epoch, total_loss))
-    return loss_list
+    return loss_list, train_nid, features
  
  
-def evaluate(model, features, labels, dataloader):
+def evaluate(model, features, dataloader):
     with torch.no_grad():
         model.eval()
         # ys = []
@@ -158,7 +155,7 @@ def evaluate(model, features, labels, dataloader):
         for it, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
             with torch.no_grad():
                 batch_inputs = features[input_nodes]
-                batch_labels = labels[output_nodes]
+                # batch_labels = labels[output_nodes]
 
                 unsplice, splice = batch_inputs[:, 0], batch_inputs[:, 1]
                 umax, smax = max(unsplice), max(splice)
@@ -166,7 +163,7 @@ def evaluate(model, features, labels, dataloader):
                 beta0 = np.float32(1.0)
                 gamma0 = np.float32(umax/smax*1)
 
-                us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, cellID, clusters = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
+                us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
 
                 points = np.array([e1.numpy(), e2.numpy()]).transpose()
                 nbrs = NearestNeighbors(n_neighbors=30, algorithm='ball_tree').fit(points)
@@ -174,38 +171,45 @@ def evaluate(model, features, labels, dataloader):
                 indices = torch.tensor(indices)
 
                 loss = cosine_similarity(us, s, us_pred, s_pred, indices)
+    return us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, loss
 
-                write_estimates(us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, cellID, clusters, loss)
-
-                # points = np.array([e1.numpy(), e2.numpy()]).transpose()
-                # nbrs = NearestNeighbors(n_neighbors=30, algorithm='ball_tree').fit(points)
-                # distances, indices = nbrs.kneighbors(points) 
-                # indices = torch.tensor(indices)
+               
 
 
-                # ys.append(batch_labels)
-                # y_hats.append(model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5))
-        # return F.accuracy()
-        # return F.mse_loss(torch.cat(y_hats), torch.cat(ys))
-    
-def write_estimates( us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, cellID, clusters, loss):
+def write_estimates(cellIndex, gene_name, unsplice, splice, unsplice_predict, splice_predict, alpha, beta, gamma, loss, cellID, clusters, embedding1, embedding2):
     csv_file_path = 'output.csv'
 
-    data = list(zip(np.arange(0, len(us)), us.numpy(), s.numpy(), us_pred.numpy(), s_pred.numpy(), alphas.numpy(), beta.numpy(), gamma.numpy(), np.full(loss, len(us)), cellID.numpy(), clusters.numpy(), e1.numpy(), e2.numpy()))
-    columns = ['cellIndex', 'gene_name', 'unsplice','splice','unsplice_predict','splice_predict','alpha','beta','gamma','loss','cellID','clusters','embedding1','embedding2']
+    data = list(zip(cellIndex, gene_name, unsplice.numpy(), splice.numpy(), unsplice_predict.numpy(), splice_predict.numpy(), alpha.numpy(), beta.numpy(), gamma.numpy(), loss, cellID, clusters, embedding1.numpy(), embedding2.numpy()))
+    columns = ['cellIndex', 'gene_name', 'unsplice', 'splice', 'unsplice_predict', 'splice_predict', 'alpha', 'beta', 'gamma', 'loss', 'cellID', 'clusters', 'embedding1', 'embedding2']
     df = pd.DataFrame(data, columns=columns)
 
     with open(csv_file_path, 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
     
         # Write the header row if needed
-        writer.writerow(['cellIndex', 'gene_name', 'unsplice','splice','unsplice_predict','splice_predict','alpha','beta','gamma','loss','cellID','clusters','embedding1','embedding2'])
+        writer.writerow(['cellIndex', 'gene_name', 'unsplice', 'splice', 'unsplice_predict', 'splice_predict', 'alpha', 'beta', 'gamma', 'loss', 'cellID', 'clusters', 'embedding1', 'embedding2'])
         # Write the data rows
         writer.writerows(data)
     return df
+    
+# def write_estimates( us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, loss):
+#     csv_file_path = 'output.csv'
+
+#     data = list(zip(us.numpy(), s.numpy(), us_pred.numpy(), s_pred.numpy(), alphas.numpy(), beta.numpy(), gamma.numpy(), np.full(loss, len(us)), e1.numpy(), e2.numpy()))
+#     columns = ['unsplice','splice','unsplice_predict','splice_predict','alpha','beta','gamma','loss','embedding1','embedding2']
+#     df = pd.DataFrame(data, columns=columns)
+
+#     with open(csv_file_path, 'w', newline='') as csv_file:
+#         writer = csv.writer(csv_file)
+    
+#         # Write the header row if needed
+#         writer.writerow(['unsplice','splice','unsplice_predict','splice_predict','alpha','beta','gamma','loss','embedding1','embedding2'])
+#         # Write the data rows
+#         writer.writerows(data)
+#     return df
 
 
-def make_graph(gene_name, unsplice, splice, cellID, clusters, embedding1, embedding2):
+def make_graph(unsplice, splice, embedding1, embedding2):
     num_nodes = len(unsplice)
 
     g = dgl.DGLGraph()
@@ -216,7 +220,6 @@ def make_graph(gene_name, unsplice, splice, cellID, clusters, embedding1, embedd
 
     # Calculate Euclidean distances between all pairs of nodes
     distances = cdist(node_pairs, node_pairs)
-    # print(distances.shape)
 
     # Iterate through each node and connect it to the closest nodes
     for i in range(num_nodes):
@@ -226,19 +229,64 @@ def make_graph(gene_name, unsplice, splice, cellID, clusters, embedding1, embedd
         g.add_edges(closest_indices, i)
     
     feat = torch.tensor(node_pairs, dtype=torch.float32)
-    labels = torch.tensor(np.ones(12329), dtype=torch.float32)
+    # labels = torch.tensor(np.ones(12329), dtype=torch.float32)
 
-    g.ndata['gene_name'] = torch.tensor(gene_name, dtype=torch.str)
     g.ndata['feat'] = feat
-    g.ndata['labels'] = labels
-    # g.ndata['cellID'] = torch.tensor(cellID, dtype=torch.str)
-    # g.ndata['clusters'] = torch.tensor(clusters, dtype=torch.str)
+    # g.ndata['labels'] = labels
     g.ndata['embedding1'] = torch.tensor(embedding1, dtype=torch.float32)
     g.ndata['embedding2'] = torch.tensor(embedding2, dtype=torch.float32)
 
-    return g, feat, labels
+    return g, feat
 
-def plot_nice_stuff(gene_list):
+def run_model(g, f, filtered_df):
+
+    model = GATLayer(100)
+    loss_list, train_nid, features = train(g, f, model)
+
+    
+    sampler = dgl.dataloading.NeighborSampler([-1,-1])
+    dataloader = dgl.dataloading.DataLoader(g, train_nid, sampler,
+                                                    batch_size=filtered_df.shape[0],
+                                                    shuffle=False,
+                                                    drop_last=False,
+                                                    num_workers=0,
+                                                    )
+    unsplice_predict, splice_predict, alpha, beta, gamma, embedding1, embedding2, unsplice, splice, loss = evaluate(model, features, dataloader)
+
+
+    cellIndex = np.arange(0, filtered_df.shape[0])
+    gene_name = ["Myo1b" for i in range(filtered_df.shape[0])]
+    loss = np.full(filtered_df.shape[0], loss.item())
+    cellID = filtered_df.iloc[:, 3].tolist()
+    clusters = filtered_df.iloc[:, 4].tolist()
+    return write_estimates(cellIndex, gene_name, unsplice, splice, unsplice_predict, splice_predict, alpha, beta, gamma, loss, cellID, clusters, embedding1, embedding2)
+
+
+def set_up_graph(data_path):
+    # g, f, labels, embedding1, embedding2 = None, None, None, None, None
+    # Check if the processed data exists, if not, read and process the data
+    try:
+
+        with open('processed_data.pkl', 'rb') as file:
+            cell_type_u_s, filtered_df, g, f = pickle.load(file)
+
+    except FileNotFoundError:
+        cell_type_u_s = pd.read_csv(data_path)
+        filtered_df = cell_type_u_s[cell_type_u_s['gene_name'] == 'Myo1b']
+        
+        unsplice = filtered_df.iloc[:, 1].tolist()
+        splice = filtered_df.iloc[:, 2].tolist()
+        embedding1 = filtered_df.iloc[:, 5].tolist()
+        embedding2 = filtered_df.iloc[:, 6].tolist()
+
+        g, f = make_graph(unsplice, splice, embedding1, embedding2)
+        
+        with open('processed_data.pkl', 'wb') as file:
+            pickle.dump((cell_type_u_s, filtered_df, g, f), file)
+
+    return g, f, filtered_df
+
+def plot_nice_stuff(gene_list, df):
     ncols=5
     height=math.ceil(len(gene_list)/5)*4
     fig = plt.figure(figsize=(20,height))
@@ -249,7 +297,7 @@ def plot_nice_stuff(gene_list):
             ax=ax,
             x='splice',
             y='unsplice',
-            cellDancer_df=cellDancer_df,
+            cellDancer_df=df,
             custom_xlim=None,
             custom_ylim=None,
             colors=colormap.colormap_erythroid,
@@ -263,48 +311,36 @@ def plot_nice_stuff(gene_list):
 
     plt.show()
 
-
-cell_type_u_s_path = '/Users/jenniferli/Downloads/CSCI 2952G/GastrulationErythroid_cell_type_u_s.csv'
-
-g, f, labels, embedding1, embedding2 = None, None, None, None, None
-# Check if the processed data exists, if not, read and process the data
-try:
-
-    with open('processed_data.pkl', 'rb') as file:
-        cell_type_u_s, g, f, labels, embedding1, embedding2 = pickle.load(file)
-
-except FileNotFoundError:
-    cell_type_u_s = pd.read_csv(cell_type_u_s_path)
-    filtered_df = cell_type_u_s[cell_type_u_s['gene_name'] == 'Myo1b']
-    
-    # unsplice = filtered_df.iloc[:, 1].tolist()
-    gene_name = filtered_df.iloc[:, 0].tolist()
-    unsplice = filtered_df.iloc[:, 1].tolist()
-    splice = filtered_df.iloc[:, 2].tolist()
-    cellID = filtered_df.iloc[:, 3].tolist()
-    clusters = filtered_df.iloc[:, 4].tolist()
-    embedding1 = filtered_df.iloc[:, 5].tolist()
-    embedding2 = filtered_df.iloc[:, 6].tolist()
-
-    g, f, labels = make_graph(gene_name, unsplice, splice, cellID, clusters, embedding1, embedding2)
-    
-    with open('processed_data.pkl', 'wb') as file:
-        pickle.dump((cell_type_u_s, g, f, labels, embedding1, embedding2), file)
-
-# Train stuff --
-
-model = GATLayer(100)
-loss_list = train(g, f, labels, model)
+data_path = '/Users/jenniferli/Downloads/CSCI 2952G/GastrulationErythroid_cell_type_u_s.csv'
+g, f, filtered_df = set_up_graph(data_path)
+result_df = run_model(g, f, filtered_df)
 
 
-import matplotlib.pyplot as plt
+df = pd.read_csv('output.csv')
+celldancer_df = pd.read_csv('cellDancer_estimation.csv')
+plot_nice_stuff(['Myo1b'], df)
+plot_nice_stuff(['Smarca2', 'Rbms2', 'Myo1b', 'Hba-x', 'Yipf5', 'Skap1', 'Smim1', 'Nfkb1', 'Sulf2', 'Blvrb', 'Hbb-y', 'Coro2b', 'Yipf5', 'Phc2', 'Mllt3'], celldancer_df)
 
-fig, ax = plt.subplots()
 
-ax.plot(loss_list)
-ax.set_xlabel("Epoch")
-ax.set_ylabel("Loss")
-plt.show()
+
+
+
+
+
+
+
+
+
+
+
+# import matplotlib.pyplot as plt
+
+# fig, ax = plt.subplots()
+
+# ax.plot(loss_list)
+# ax.set_xlabel("Epoch")
+# ax.set_ylabel("Loss")
+# plt.show()
 
 # Plot stuff -- 
 

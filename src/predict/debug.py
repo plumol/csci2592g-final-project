@@ -5,12 +5,13 @@ import glob
 import pandas as pd
 import math
 import matplotlib.pyplot as plt
+import networkx as nx
 import celldancer as cd
 import celldancer.cdplt as cdplt
 from celldancer.cdplt import colormap
 import dgl
 from scipy.spatial.distance import cdist
-import networkx as nx
+
 import numpy as np
 
 from model import build_datamodule

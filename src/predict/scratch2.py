@@ -1,5 +1,4 @@
 import dgl
-import csv
 import torch
 import torch.distributed
 import pandas as pd
@@ -28,11 +27,6 @@ from tqdm import tqdm
 from dgl.nn.pytorch.conv import GATConv
 from dgl.dataloading import GraphDataLoader
 from scipy.spatial.distance import cdist
-import math
-import matplotlib.pyplot as plt
-import celldancer as cd
-import celldancer.cdplt as cdplt
-from celldancer.cdplt import colormap
 
 
 class GATLayer(nn.Module):
@@ -56,9 +50,6 @@ class GATLayer(nn.Module):
         e1 = g[1].dstdata['embedding1']
         e2 = g[1].dstdata['embedding2']
 
-        cellID = g[1].dstdata['cellID']
-        clusters = g[1].dstdata['clusters']
-
         beta = h[:,:,:,0].squeeze()
         gamma = h[:,:,:,1].squeeze()
         alphas = h[:,:,:,2].squeeze()
@@ -70,7 +61,7 @@ class GATLayer(nn.Module):
         unsplice_predict = us + (alphas - beta*us)*dt
         splice_predict = s + (beta*us - gamma*s)*dt
 
-        return unsplice_predict, splice_predict, alphas, beta, gamma, e1, e2, us, s, cellID, clusters
+        return unsplice_predict, splice_predict, e1, e2, us, s
 
         # return h.mean(dim=3).squeeze()
 
@@ -97,8 +88,7 @@ def train(g, features, labels, model):
     # features = g.ndata['feat'] 
     # labels = g.ndata["label"]["_N"].to("cuda")
     train_nid = torch.tensor(range(g.num_nodes())).type(torch.int64)
-    
-    loss_list = []
+ 
     for epoch in range(24):
         model.train()
         sampler = dgl.dataloading.MultiLayerNeighborSampler([15, 10])
@@ -107,7 +97,6 @@ def train(g, features, labels, model):
             batch_size=1024, shuffle=True, drop_last=False, num_workers=0)
  
         total_loss = 0
-        
          
         for step, (input_nodes, output_nodes, blocks) in enumerate((dataloader)):
             batch_inputs = features[input_nodes]
@@ -120,7 +109,7 @@ def train(g, features, labels, model):
             gamma0 = np.float32(umax/smax*1)
 
             # batch_pred = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
-            us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, cellID, clusters = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
+            us_pred, s_pred, e1, e2, us, s = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
 
             points = np.array([e1.numpy(), e2.numpy()]).transpose()
             nbrs = NearestNeighbors(n_neighbors=30, algorithm='ball_tree').fit(points)
@@ -131,11 +120,10 @@ def train(g, features, labels, model):
 
             # loss = F.mse_loss(batch_pred, batch_labels)
             total_loss += loss
-            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-        
+ 
  
         sampler = dgl.dataloading.NeighborSampler([-1,-1])
         dataloader = dgl.dataloading.DataLoader(g, train_nid, sampler,
@@ -144,10 +132,9 @@ def train(g, features, labels, model):
                                                 drop_last=False,
                                                 num_workers=0,
                                                 )
-        loss_list.append(float(total_loss))
-        eval = evaluate(model, features, labels, dataloader)
+ 
+        # eval = evaluate(model, features, labels, dataloader)
         print("Epoch {:05d} | Loss {:.4f} ".format(epoch, total_loss))
-    return loss_list
  
  
 def evaluate(model, features, labels, dataloader):
@@ -166,8 +153,7 @@ def evaluate(model, features, labels, dataloader):
                 beta0 = np.float32(1.0)
                 gamma0 = np.float32(umax/smax*1)
 
-                us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, cellID, clusters = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
-
+                us_pred, s_pred, e1, e2, us, s = model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5)
                 points = np.array([e1.numpy(), e2.numpy()]).transpose()
                 nbrs = NearestNeighbors(n_neighbors=30, algorithm='ball_tree').fit(points)
                 distances, indices = nbrs.kneighbors(points) 
@@ -175,37 +161,14 @@ def evaluate(model, features, labels, dataloader):
 
                 loss = cosine_similarity(us, s, us_pred, s_pred, indices)
 
-                write_estimates(us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, cellID, clusters, loss)
-
-                # points = np.array([e1.numpy(), e2.numpy()]).transpose()
-                # nbrs = NearestNeighbors(n_neighbors=30, algorithm='ball_tree').fit(points)
-                # distances, indices = nbrs.kneighbors(points) 
-                # indices = torch.tensor(indices)
-
-
                 # ys.append(batch_labels)
-                # y_hats.append(model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5))
+                y_hats.append(model(blocks, batch_inputs, unsplice, splice, alpha0, beta0, gamma0, 0.5))
         # return F.accuracy()
-        # return F.mse_loss(torch.cat(y_hats), torch.cat(ys))
+        return F.mse_loss(torch.cat(y_hats), torch.cat(ys))
     
-def write_estimates( us_pred, s_pred, alphas, beta, gamma, e1, e2, us, s, cellID, clusters, loss):
-    csv_file_path = 'output.csv'
-
-    data = list(zip(np.arange(0, len(us)), us.numpy(), s.numpy(), us_pred.numpy(), s_pred.numpy(), alphas.numpy(), beta.numpy(), gamma.numpy(), np.full(loss, len(us)), cellID.numpy(), clusters.numpy(), e1.numpy(), e2.numpy()))
-    columns = ['cellIndex', 'gene_name', 'unsplice','splice','unsplice_predict','splice_predict','alpha','beta','gamma','loss','cellID','clusters','embedding1','embedding2']
-    df = pd.DataFrame(data, columns=columns)
-
-    with open(csv_file_path, 'w', newline='') as csv_file:
-        writer = csv.writer(csv_file)
-    
-        # Write the header row if needed
-        writer.writerow(['cellIndex', 'gene_name', 'unsplice','splice','unsplice_predict','splice_predict','alpha','beta','gamma','loss','cellID','clusters','embedding1','embedding2'])
-        # Write the data rows
-        writer.writerows(data)
-    return df
 
 
-def make_graph(gene_name, unsplice, splice, cellID, clusters, embedding1, embedding2):
+def make_graph(unsplice, splice, embedding1, embedding2):
     num_nodes = len(unsplice)
 
     g = dgl.DGLGraph()
@@ -228,40 +191,12 @@ def make_graph(gene_name, unsplice, splice, cellID, clusters, embedding1, embedd
     feat = torch.tensor(node_pairs, dtype=torch.float32)
     labels = torch.tensor(np.ones(12329), dtype=torch.float32)
 
-    g.ndata['gene_name'] = torch.tensor(gene_name, dtype=torch.str)
     g.ndata['feat'] = feat
     g.ndata['labels'] = labels
-    # g.ndata['cellID'] = torch.tensor(cellID, dtype=torch.str)
-    # g.ndata['clusters'] = torch.tensor(clusters, dtype=torch.str)
     g.ndata['embedding1'] = torch.tensor(embedding1, dtype=torch.float32)
     g.ndata['embedding2'] = torch.tensor(embedding2, dtype=torch.float32)
 
     return g, feat, labels
-
-def plot_nice_stuff(gene_list):
-    ncols=5
-    height=math.ceil(len(gene_list)/5)*4
-    fig = plt.figure(figsize=(20,height))
-
-    for i in range(len(gene_list)):
-        ax = fig.add_subplot(math.ceil(len(gene_list)/ncols), ncols, i+1)
-        cdplt.scatter_gene(
-            ax=ax,
-            x='splice',
-            y='unsplice',
-            cellDancer_df=cellDancer_df,
-            custom_xlim=None,
-            custom_ylim=None,
-            colors=colormap.colormap_erythroid,
-            alpha=0.5, 
-            s = 5,
-            velocity=True,
-            gene=gene_list[i])
-        
-        ax.set_title(gene_list[i])
-        ax.axis('off')
-
-    plt.show()
 
 
 cell_type_u_s_path = '/Users/jenniferli/Downloads/CSCI 2952G/GastrulationErythroid_cell_type_u_s.csv'
@@ -269,42 +204,22 @@ cell_type_u_s_path = '/Users/jenniferli/Downloads/CSCI 2952G/GastrulationErythro
 g, f, labels, embedding1, embedding2 = None, None, None, None, None
 # Check if the processed data exists, if not, read and process the data
 try:
-
     with open('processed_data.pkl', 'rb') as file:
         cell_type_u_s, g, f, labels, embedding1, embedding2 = pickle.load(file)
-
 except FileNotFoundError:
     cell_type_u_s = pd.read_csv(cell_type_u_s_path)
     filtered_df = cell_type_u_s[cell_type_u_s['gene_name'] == 'Myo1b']
     
-    # unsplice = filtered_df.iloc[:, 1].tolist()
-    gene_name = filtered_df.iloc[:, 0].tolist()
     unsplice = filtered_df.iloc[:, 1].tolist()
     splice = filtered_df.iloc[:, 2].tolist()
-    cellID = filtered_df.iloc[:, 3].tolist()
-    clusters = filtered_df.iloc[:, 4].tolist()
+        
     embedding1 = filtered_df.iloc[:, 5].tolist()
     embedding2 = filtered_df.iloc[:, 6].tolist()
 
-    g, f, labels = make_graph(gene_name, unsplice, splice, cellID, clusters, embedding1, embedding2)
+    g, f, labels = make_graph(unsplice, splice, embedding1, embedding2)
     
     with open('processed_data.pkl', 'wb') as file:
         pickle.dump((cell_type_u_s, g, f, labels, embedding1, embedding2), file)
-
-# Train stuff --
-
-model = GATLayer(100)
-loss_list = train(g, f, labels, model)
-
-
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots()
-
-ax.plot(loss_list)
-ax.set_xlabel("Epoch")
-ax.set_ylabel("Loss")
-plt.show()
 
 # Plot stuff -- 
 
@@ -330,6 +245,15 @@ plt.show()
 
 
 # plot_stuff(g)
+
+# Train stuff --
+
+# model = GATLayer(100)
+# train(g, f, labels, model)
+
+
+
+
 
 
 
