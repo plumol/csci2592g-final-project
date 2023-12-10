@@ -3,3 +3,6 @@ data
 cellDancer_estimation.csv
 old_processed_data.pkl
 output.csv
+hba-x_processed_data.pkl
+myo1b_processed_data.pkl
+smim1_processed_data.pkl
