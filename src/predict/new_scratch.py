@@ -89,23 +89,23 @@ def cosine_similarity(unsplice, splice, unsplice_predict, splice_predict, indice
     return torch.mean(1 - cosine_max)
     
 
-def train(g, features, model):
+def train(g, features, model, epochs, batch_size):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     # features = g.ndata['feat'] 
     # labels = g.ndata["label"]["_N"].to("cuda")
     train_nid = torch.tensor(range(g.num_nodes())).type(torch.int64)
     
     loss_list = []
-    for epoch in range(24):
+    for epoch in range(epochs):
         model.train()
-        sampler = dgl.dataloading.MultiLayerNeighborSampler([15, 10])
+        sampler = dgl.dataloading.MultiLayerNeighborSampler([64, 16])
         dataloader = dgl.dataloading.DataLoader(
             g, train_nid, sampler, use_ddp=False,
-            batch_size=1024, shuffle=True, drop_last=False, num_workers=0)
- 
+            batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0)
+
         total_loss = 0
         
-         
+        
         for step, (input_nodes, output_nodes, blocks) in enumerate((dataloader)):
             batch_inputs = features[input_nodes]
             # batch_labels = labels[output_nodes]
@@ -238,10 +238,10 @@ def make_graph(unsplice, splice, embedding1, embedding2):
 
     return g, feat
 
-def run_model(g, f, filtered_df):
+def run_model(g, f, filtered_df, epochs=25, batch_size=1024):
 
     model = GATLayer(100)
-    loss_list, train_nid, features = train(g, f, model)
+    loss_list, train_nid, features = train(g, f, model, epochs, batch_size)
 
     
     sampler = dgl.dataloading.NeighborSampler([-1,-1])
@@ -262,7 +262,7 @@ def run_model(g, f, filtered_df):
     return write_estimates(cellIndex, gene_name, unsplice, splice, unsplice_predict, splice_predict, alpha, beta, gamma, loss, cellID, clusters, embedding1, embedding2)
 
 
-def set_up_graph(data_path):
+def set_up_graph(data_path, gene):
     # g, f, labels, embedding1, embedding2 = None, None, None, None, None
     # Check if the processed data exists, if not, read and process the data
     try:
@@ -272,7 +272,7 @@ def set_up_graph(data_path):
 
     except FileNotFoundError:
         cell_type_u_s = pd.read_csv(data_path)
-        filtered_df = cell_type_u_s[cell_type_u_s['gene_name'] == 'Myo1b']
+        filtered_df = cell_type_u_s[cell_type_u_s['gene_name'] == gene]
         
         unsplice = filtered_df.iloc[:, 1].tolist()
         splice = filtered_df.iloc[:, 2].tolist()
@@ -311,13 +311,13 @@ def plot_nice_stuff(gene_list, df):
 
     plt.show()
 
-data_path = '/Users/jenniferli/Downloads/CSCI 2952G/GastrulationErythroid_cell_type_u_s.csv'
-g, f, filtered_df = set_up_graph(data_path)
-result_df = run_model(g, f, filtered_df)
+data_path = './data/GastrulationErythroid_cell_type_u_s.csv'
+g, f, filtered_df = set_up_graph(data_path, "Hbb-y")
+result_df = run_model(g, f, filtered_df, epochs=50, batch_size=4096)
 
 
 df = pd.read_csv('output.csv')
-celldancer_df = pd.read_csv('cellDancer_estimation.csv')
+celldancer_df = pd.read_csv('./src/results/cellDancer_estimation.csv')
 plot_nice_stuff(['Myo1b'], df)
 plot_nice_stuff(['Smarca2', 'Rbms2', 'Myo1b', 'Hba-x', 'Yipf5', 'Skap1', 'Smim1', 'Nfkb1', 'Sulf2', 'Blvrb', 'Hbb-y', 'Coro2b', 'Yipf5', 'Phc2', 'Mllt3'], celldancer_df)
 
