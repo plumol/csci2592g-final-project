@@ -3,3 +3,11 @@
 ## Overview
 
 forGATable is a deep learning model based on a graph attention network framework to predict the transcription, splicing, and degradation parameters governing RNA velocity.
+
+## Running the Model
+Data may be downloaded from link. 
+
+On cloning this Github Repository, navigate to src/predict
+/gat_model.py.  Change the 'data_path' on line 324 to reflect the path of your downloaded csv file, and run the model.
+
+
